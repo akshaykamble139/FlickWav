@@ -1,0 +1,19 @@
+/* Transparent Slider Styling */
+.transparent-slider .track {
+    -fx-background-color: transparent;
+}
+
+.transparent-slider .thumb {
+    -fx-background-color: #444;
+    -fx-pref-height: 16px;
+    -fx-pref-width: 8px;
+    -fx-background-radius: 4px;
+}
+
+.transparent-slider .thumb:hover {
+    -fx-background-color: #333;
+}
+
+.transparent-slider .thumb:pressed {
+    -fx-background-color: #222;
+}
