@@ -1,9 +1,9 @@
 package com.flickwav;
 
-import com.mpatric.mp3agic.ID3v2;
-import com.mpatric.mp3agic.Mp3File;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
@@ -11,279 +11,313 @@ import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
-import javafx.scene.media.*;
+import javafx.collections.FXCollections;
+import javafx.scene.control.ComboBox;
+
+import uk.co.caprica.vlcj.factory.MediaPlayerFactory;
+import uk.co.caprica.vlcj.factory.discovery.NativeDiscovery;
+import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer;
+import uk.co.caprica.vlcj.javafx.videosurface.ImageViewVideoSurface;
+import com.mpatric.mp3agic.*;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.IOException;
 
 public class Main extends Application {
-    private MediaPlayer mediaPlayer;
-    private MediaView mediaView;
-    private ImageView placeholderImage;
-    private Slider progressSlider; // Progress bar
 
-    private void updateVolumeSliderStyle(Slider slider, double percentage) {
-        Platform.runLater(() -> {
-            slider.lookup(".track").setStyle("-fx-background-color: linear-gradient(to right, #00cc00 " + percentage + "%, #ccc " + percentage + "%);");
-        });
-    }
+    private MediaPlayerFactory mediaPlayerFactory;
+    private EmbeddedMediaPlayer mediaPlayer;
+    private ImageView videoView;
+    private Stage primaryStage;
 
     @Override
     public void start(Stage stage) {
+    	this.primaryStage = stage;
 
-        String defaultTitle = "Flickwav - Media Player";
-        stage.setTitle(defaultTitle);
+        new NativeDiscovery().discover();
 
-        // Menu Bar
+        mediaPlayerFactory = new MediaPlayerFactory();
+        mediaPlayer = mediaPlayerFactory.mediaPlayers().newEmbeddedMediaPlayer();
+
+        videoView = new ImageView();
+        videoView.setFitWidth(960);
+        videoView.setFitHeight(540);
+        videoView.setPreserveRatio(true);
+
+        mediaPlayer.videoSurface().set(new ImageViewVideoSurface(videoView));
+
         MenuBar menuBar = new MenuBar();
         Menu fileMenu = new Menu("File");
-        MenuItem openFileItem = new MenuItem("Open File");
-        fileMenu.getItems().add(openFileItem);
+        MenuItem openItem = new MenuItem("Open File");
+        MenuItem exitItem = new MenuItem("Exit");
 
-        MenuItem closeFileItem = new MenuItem("Close File");
-        fileMenu.getItems().add(closeFileItem);
+        openItem.setOnAction(e -> openMedia(stage));
+        exitItem.setOnAction(e -> {
+            stop();
+            stage.close();
+        });
 
-        closeFileItem.setDisable(true);
+        fileMenu.getItems().addAll(openItem, exitItem);
         menuBar.getMenus().add(fileMenu);
 
-        // Media View and Placeholder
-        mediaView = new MediaView();
-        mediaView.setVisible(false); // Initially hidden
-
-        mediaView.setPreserveRatio(true);
-        mediaView.setFitWidth(900);  // Adjust based on your UI needs
-        mediaView.setFitHeight(600);
-
-        String placeholderPath = getClass().getResource("/placeholder.jpg") != null ?
-                getClass().getResource("/placeholder.jpg").toString() : null;
-
-        placeholderImage = placeholderPath != null ? new ImageView(new Image(placeholderPath)) : new ImageView();
-        placeholderImage.setFitWidth(900);
-        placeholderImage.setFitHeight(600);
-        placeholderImage.setPreserveRatio(true);
-
-        if (placeholderPath == null) {
-            placeholderImage.setImage(new Image("/placeholder.jpg"));
-        }
-
-        // StackPane to overlay mediaView and placeholderImage
-        StackPane mediaContainer = new StackPane(placeholderImage, mediaView);
-        VBox.setVgrow(mediaContainer, Priority.ALWAYS); // Allows video to scale properly
-
-        // Create ProgressBar (for green fill)
-        ProgressBar progressBar = new ProgressBar(0);
-        progressBar.setMaxWidth(Double.MAX_VALUE);
-        progressBar.setStyle("-fx-accent: #00cc00;");
-
-        // Create Slider (for user interaction)
-        progressSlider = new Slider();
-        progressSlider.setMin(0);
-        progressSlider.setValue(0);
+        Slider progressSlider = new Slider();
+        progressSlider.setPrefWidth(800);
         progressSlider.setMaxWidth(Double.MAX_VALUE);
-        progressSlider.getStyleClass().add("transparent-slider"); // New CSS class
+        progressSlider.setValue(0);
 
-        // Stack them (ProgressBar behind Slider)
-        StackPane progressContainer = new StackPane();
-        progressContainer.getChildren().addAll(progressBar, progressSlider);
+        Label timeLabel = new Label("00:00 / 00:00");
 
-        // Speed Selection Dropdown (ComboBox)
-        ComboBox<String> speedComboBox = new ComboBox<>();
-        speedComboBox.getItems().addAll("0.5x", "1x", "1.5x", "2x"); // Available speeds
-        speedComboBox.setValue("1x"); // Default speed
+        Button playButton = new Button("▶ Play");
+        Button pauseButton = new Button("⏸ Pause");
+        Button stopButton = new Button("⏹ Stop");
 
-        speedComboBox.setOnAction(e -> {
-            if (mediaPlayer != null) {
-                String selectedSpeed = speedComboBox.getValue();
-                double speed = Double.parseDouble(selectedSpeed.replace("x", "")); // Convert to double
-                mediaPlayer.setRate(speed);
-            }
+        playButton.setOnAction(e -> mediaPlayer.controls().play());
+        pauseButton.setOnAction(e -> mediaPlayer.controls().pause());
+
+        stopButton.setOnAction(e -> {
+            mediaPlayer.controls().stop();
+
+            // Reset slider and time
+            progressSlider.setValue(0);
+            updateSliderTrackStyle(progressSlider, 0);
+
+            timeLabel.setText("00:00 / " + formatTime(mediaPlayer.media().info().duration()));
         });
 
-        // Volume Slider
-        Slider volumeSlider = new Slider();
-        volumeSlider.setMin(0);
-        volumeSlider.setMax(100);
-        volumeSlider.setValue(50); // Default volume: 50%
-        volumeSlider.setShowTickMarks(true);
-        volumeSlider.setShowTickLabels(true);
-        volumeSlider.setMajorTickUnit(50);
-        volumeSlider.setBlockIncrement(5);
-        volumeSlider.setMaxWidth(150);
+        progressSlider.setOnMousePressed(e -> {
+            double percent = e.getX() / progressSlider.getWidth();
+            long duration = mediaPlayer.media().info().duration();
+            mediaPlayer.controls().setTime((long) (percent * duration));
+            progressSlider.setValue(percent * 100);
+            updateSliderTrackStyle(progressSlider, percent);
+        });
+        
+        progressSlider.setOnMouseDragged(e -> {
+            double perc = e.getX() / progressSlider.getWidth();
+            double percent = Math.max(0, Math.min(1, perc)); // Clamp 0–1
+            long duration = mediaPlayer.media().info().duration();
+            long time = (long) (percent * duration);
+            Platform.runLater(() -> {
+                mediaPlayer.controls().setTime(time);
+                progressSlider.setValue(percent * 100);
+                updateSliderTrackStyle(progressSlider, percent);
+            });
+        });
 
-        // Apply initial fill color when app starts
-        Platform.runLater(() -> updateVolumeSliderStyle(volumeSlider, 50));
+        
+        ComboBox<String> speedCombo = new ComboBox<>();
+        speedCombo.setItems(FXCollections.observableArrayList(
+            "0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"
+        ));
+        speedCombo.setValue("1.0x"); // Default speed
 
-        // Adjust MediaPlayer Volume & Update Slider Fill
+        speedCombo.setOnAction(e -> {
+            String selected = speedCombo.getValue();
+            double rate = Double.parseDouble(selected.replace("x", ""));
+            mediaPlayer.controls().setRate((float) rate);
+        });
+        
+        Slider volumeSlider = new Slider(0, 100, 50); // Min=0, Max=100, Initial=50
+        volumeSlider.setPrefWidth(100);
+        volumeSlider.setShowTickMarks(false);
+        volumeSlider.setShowTickLabels(false);
+        
+        volumeSlider.getStyleClass().add("custom-slider");
+        
         volumeSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
-            if (mediaPlayer != null) {
-                mediaPlayer.setVolume(newVal.doubleValue() / 100.0); // Convert 0-100 to 0-1 range
+            int volume = newVal.intValue();
+            mediaPlayer.audio().setVolume(volume);
+
+            Node track = volumeSlider.lookup(".track");
+            if (track != null) {
+                track.setStyle(String.format(
+                    "-fx-background-color: linear-gradient(to right, #4caf50 %.2f%%, #ddd %.2f%%);",
+                    (double) volume, (double) volume
+                ));
             }
-            updateVolumeSliderStyle(volumeSlider, newVal.doubleValue()); // Update fill color dynamically
         });
 
-        // Controls with Icons
-        Button playButton = new Button("▶");
-        Button pauseButton = new Button("⏸");
-        Button stopButton = new Button("⏹");
 
-        HBox controls = new HBox(10, playButton, pauseButton, stopButton, speedComboBox, new Label("🔊"), volumeSlider);
-        controls.setStyle("-fx-padding: 10; -fx-alignment: center;");
+        HBox buttonsBar = new HBox(10,
+        	    playButton,
+        	    pauseButton,
+        	    stopButton,
+        	    timeLabel,
+        	    new Label("Speed:"), speedCombo,
+        	    new Label("Volume:"), volumeSlider
+        	);
 
-        // Layout
+        buttonsBar.setAlignment(javafx.geometry.Pos.CENTER);
+
+        VBox controlBox = new VBox(5, progressSlider, buttonsBar);
+        controlBox.setPadding(new Insets(10));
+        controlBox.setStyle("-fx-background-color: #f0f0f0;");
+        controlBox.setAlignment(javafx.geometry.Pos.CENTER);
+
         BorderPane root = new BorderPane();
         root.setTop(menuBar);
-        root.setCenter(mediaContainer);
+        root.setCenter(videoView);
+        root.setBottom(controlBox);
 
-        VBox bottomLayout = new VBox(progressContainer, controls);
-        bottomLayout.setSpacing(5);
-        bottomLayout.setStyle("-fx-padding: 10; -fx-alignment: center;");
+        Scene scene = new Scene(root, 1000, 750);
+        stage.setTitle("Flickwav VLCJ Player");
+        stage.setScene(scene);
+        stage.show();
+        
+        Platform.runLater(() -> root.requestFocus());
+        
+        scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            switch (event.getCode()) {
+                case SPACE:
+                case ENTER:
+                    if (mediaPlayer.status().isPlayable()) {
+                        if (mediaPlayer.status().isPlaying()) {
+                            mediaPlayer.controls().pause();
+                        } else {
+                            mediaPlayer.controls().play();
+                        }
+                    }
+                    event.consume(); // ⛔ prevent buttons from being "clicked"
+                    break;
+            }
+        });
 
-        root.setBottom(bottomLayout);
 
-        // File Open Action
-        openFileItem.setOnAction(e -> {
-            FileChooser fileChooser = new FileChooser();
-            fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Media Files", "*.mp3", "*.wav", "*.aac", "*.mp4", "*.avi"));
-            File file = fileChooser.showOpenDialog(stage);
+        // Set initial track fill to green (0%)
+        Platform.runLater(() -> {
+            Node track = progressSlider.lookup(".track");
+            if (track != null) {
+                track.setStyle("-fx-background-color: linear-gradient(to right, #4caf50 0%, #ddd 0%);");
+            }
+            
+            Node volTrack = volumeSlider.lookup(".track");
+            if (volTrack != null) {
+                double vol = volumeSlider.getValue();
+                volTrack.setStyle(String.format(
+                    "-fx-background-color: linear-gradient(to right, #4caf50 %.2f%%, #ddd %.2f%%);",
+                    vol, vol
+                ));
+            }
+        });
 
-            if (file != null) {
-                if (mediaPlayer != null) {
-                    mediaPlayer.stop();
-                }
+        scene.getStylesheets().add(getClass().getResource("/css/style.css").toExternalForm());
 
-                String filePath = file.toURI().toString();
-                Media media = new Media(filePath);
-                mediaPlayer = new MediaPlayer(media);
-                mediaView.setMediaPlayer(mediaPlayer);
+        // Thread to update slider progress and style        
+        Thread updateThread = new Thread(() -> {
+        	while (true) {
+                if (mediaPlayer.status().isPlaying()) {
+                    long time = mediaPlayer.status().time();
+                    long duration = mediaPlayer.media().info().duration();
+                    Platform.runLater(() -> {
+                        if (duration > 0) {
+                            double percent = (double) time / duration * 100;
+                            progressSlider.setValue(percent);
+                            timeLabel.setText(formatTime(time) + " / " + formatTime(duration));
 
-                stage.setTitle("Flickwav - " + file.getName());
-                closeFileItem.setDisable(false);
-
-                // Determine file type (MP3 or Video)
-                boolean isAudio = file.getName().toLowerCase().endsWith(".mp3");
-
-                if (isAudio) {
-                    // Show placeholderImage, hide mediaView
-                    placeholderImage.setVisible(true);
-                    mediaView.setVisible(false);
-
-                    // Extract album art
-                    try {
-                        Mp3File mp3File = new Mp3File(file);
-                        if (mp3File.hasId3v2Tag()) {
-                            ID3v2 tag = mp3File.getId3v2Tag();
-                            byte[] albumImageData = tag.getAlbumImage();
-                            if (albumImageData != null) {
-                                Image albumImage = new Image(new ByteArrayInputStream(albumImageData));
-                                if (!albumImage.isError()) {
-                                    Platform.runLater(() -> placeholderImage.setImage(albumImage));
-                                } else {
-                                    System.out.println("Error loading album image.");
-                                }
+                            Node track = progressSlider.lookup(".track");
+                            if (track != null) {
+                                track.setStyle(String.format(
+                                    "-fx-background-color: linear-gradient(to right, #4caf50 %.2f%%, #ddd %.2f%%);",
+                                    percent, percent
+                                ));
                             }
                         }
-                    } catch (Exception ex) {
-                        System.out.println("Error extracting album art: " + ex.getMessage());
-                    }
-
-                } else {
-                    // Show mediaView, hide placeholderImage
-                    placeholderImage.setVisible(false);
-                    mediaView.setVisible(true);
+                    });
                 }
-
-                mediaPlayer.currentTimeProperty().addListener((obs, oldTime, newTime) -> {
-                    if (!progressSlider.isValueChanging() && mediaPlayer != null) {
-                        double progress = newTime.toSeconds() / mediaPlayer.getTotalDuration().toSeconds();
-                        progressSlider.setValue(newTime.toSeconds());
-                        progressBar.setProgress(progress); // Update ProgressBar
-                    }
-                });
-
-                mediaPlayer.setOnReady(() -> progressSlider.setMax(media.getDuration().toSeconds()));
-
-                // Allow seeking
-                progressSlider.setOnMousePressed(event -> {
-                    if (mediaPlayer != null) {
-                        mediaPlayer.seek(javafx.util.Duration.seconds(progressSlider.getValue()));
-                    }
-                });
-
-                progressSlider.setOnMouseReleased(event -> {
-                    if (mediaPlayer != null) {
-                        mediaPlayer.play(); // Resume playback
-                    }
-                });
-
-                progressSlider.setOnMouseDragged(event -> {
-                    if (mediaPlayer != null) {
-                        mediaPlayer.seek(javafx.util.Duration.seconds(progressSlider.getValue()));
-                    }
-                });
-
-                mediaPlayer.setOnEndOfMedia(() -> {
-                    mediaPlayer.stop(); // Stop the media
-                    mediaPlayer.seek(javafx.util.Duration.ZERO); // Reset to the beginning
-                    progressSlider.setValue(0); // Reset progress slider
-                    progressBar.setProgress(0); // Reset green progress bar
-                });
-
-
-                mediaPlayer.play();
-            }
-        });
-
-        // Close File Action
-        closeFileItem.setOnAction(e -> {
-            if (mediaPlayer != null) {
-                mediaPlayer.stop();
-                mediaPlayer.dispose();
-                mediaPlayer = null;
-            }
-
-            stage.setTitle(defaultTitle); // Reset title
-            placeholderImage.setVisible(true);
-            mediaView.setVisible(false);
-            placeholderImage.setImage(new Image("/placeholder.jpg"));
-
-            progressSlider.setValue(0);
-            progressBar.setProgress(0);
-
-            closeFileItem.setDisable(true); // Disable close button
-        });
-
-        // Button Actions
-        playButton.setOnAction(e -> { if (mediaPlayer != null) mediaPlayer.play(); });
-        pauseButton.setOnAction(e -> { if (mediaPlayer != null) mediaPlayer.pause(); });
-        stopButton.setOnAction(e -> { if (mediaPlayer != null) mediaPlayer.stop(); });
-
-        // Scene Setup
-        Scene scene = new Scene(root, 1000, 750);
-        stage.setScene(scene);
-        stage.setTitle("Flickwav - Media Player");
-        scene.getStylesheets().add(getClass().getResource("/css/style.css").toExternalForm());
-        stage.show();
-
-        // Keyboard Controls: Space and Enter to Play/Pause
-        scene.setOnKeyPressed(event -> {
-            if (mediaPlayer != null) {
-                switch (event.getCode()) {
-                    case SPACE, ENTER -> {
-                        MediaPlayer.Status status = mediaPlayer.getStatus();
-                        if (status == MediaPlayer.Status.PLAYING) {
-                            mediaPlayer.pause();
-                        } else if (status == MediaPlayer.Status.PAUSED || status == MediaPlayer.Status.READY) {
-                            mediaPlayer.play();
-                        }
-                    }
-                    default -> {
-                        // Do nothing for other keys
-                    }
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    break;
                 }
             }
         });
+        updateThread.setDaemon(true); 
+        updateThread.start();
+
     }
 
+    private String formatTime(long millis) {
+        long seconds = millis / 1000;
+        long minutes = seconds / 60;
+        seconds %= 60;
+        return String.format("%02d:%02d", minutes, seconds);
+    }
+    
+    private void openMedia(Stage stage) {
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Open Media File");
+        fileChooser.getExtensionFilters().addAll(
+            new FileChooser.ExtensionFilter("Media Files", "*.mp4", "*.mp3", "*.mkv", "*.avi", "*.wav", "*.flac", "*.mov"),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+        );
+        File file = fileChooser.showOpenDialog(stage);
+        if (file != null) {
+            String path = file.getAbsolutePath();
+            String filename = file.getName();
+
+            primaryStage.setTitle("Flickwav - " + filename);
+
+            if (path.toLowerCase().endsWith(".mp3")) {
+                Image artwork = extractAlbumArt(path);
+                videoView.setImage(artwork);
+            } else {
+                videoView.setImage(null);
+            }
+
+            mediaPlayer.media().play(path);
+
+            // ✅ Shift focus to root so SPACE/ENTER work
+            Platform.runLater(() -> primaryStage.getScene().getRoot().requestFocus());
+        }
+    }
+
+
+
+    private Image extractAlbumArt(String filePath) {
+        try {
+            Mp3File mp3file = new Mp3File(filePath);
+            if (mp3file.hasId3v2Tag()) {
+                ID3v2 id3v2Tag = mp3file.getId3v2Tag();
+                byte[] albumImageData = id3v2Tag.getAlbumImage();
+                if (albumImageData != null) {
+                    return new Image(new ByteArrayInputStream(albumImageData));
+                } else {
+                    System.err.println("No album image found in: " + filePath);
+                }
+            }
+            else if (!mp3file.hasId3v2Tag() && mp3file.hasId3v1Tag()) {
+                ID3v1 id3v1Tag = mp3file.getId3v1Tag();
+                System.out.println("Title: " + id3v1Tag.getTitle());
+                System.out.println("Artist: " + id3v1Tag.getArtist());
+                System.out.println("Album: " + id3v1Tag.getAlbum());
+            } else {
+                System.err.println("No ID3v2 tag found in: " + filePath);
+            }
+        } catch (IOException | UnsupportedTagException | InvalidDataException e) {
+            System.err.println("Error extracting album art from: " + filePath);
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    
+    private void updateSliderTrackStyle(Slider slider, double percent) {
+        Node track = slider.lookup(".track");
+        if (track != null) {
+            track.setStyle(String.format(
+                "-fx-background-color: linear-gradient(to right, #4caf50 %.2f%%, #ddd %.2f%%);",
+                percent * 100, percent * 100
+            ));
+        }
+    }
+
+
+    @Override
+    public void stop() {
+        if (mediaPlayer != null) mediaPlayer.release();
+        if (mediaPlayerFactory != null) mediaPlayerFactory.release();
+    }
 
     public static void main(String[] args) {
         launch(args);
