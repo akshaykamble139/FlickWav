@@ -8,6 +8,7 @@ import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.KeyCode;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -16,8 +17,14 @@ import javafx.scene.control.ComboBox;
 
 import uk.co.caprica.vlcj.factory.MediaPlayerFactory;
 import uk.co.caprica.vlcj.factory.discovery.NativeDiscovery;
+import uk.co.caprica.vlcj.player.base.MediaPlayer;
+import uk.co.caprica.vlcj.player.base.MediaPlayerEventListener;
+import uk.co.caprica.vlcj.player.base.State;
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer;
 import uk.co.caprica.vlcj.javafx.videosurface.ImageViewVideoSurface;
+import uk.co.caprica.vlcj.media.MediaRef;
+import uk.co.caprica.vlcj.media.TrackType;
+
 import com.mpatric.mp3agic.*;
 
 import java.io.ByteArrayInputStream;
@@ -30,6 +37,41 @@ public class Main extends Application {
     private EmbeddedMediaPlayer mediaPlayer;
     private ImageView videoView;
     private Stage primaryStage;
+    private Button playButton;
+    private Button pauseButton;
+    private Button stopButton;
+    private BorderPane root;
+    private VBox controlBox;
+    private Menu audioMenu;
+    private Menu subtitleMenu;
+    private boolean controlsVisible = true;
+    private javafx.animation.PauseTransition hideControlsTimer;
+
+    
+    private abstract class SimpleMediaPlayerEventAdapter implements MediaPlayerEventListener {
+        public void mediaChanged(MediaPlayer mediaPlayer, MediaRef media) {}
+        public void mediaParsedChanged(MediaPlayer mediaPlayer, boolean parsed) {}
+        public void opening(MediaPlayer mediaPlayer) {}
+        public void buffering(MediaPlayer mediaPlayer, float newCache) {}
+        public void playing(MediaPlayer mediaPlayer) {}
+        public void paused(MediaPlayer mediaPlayer) {}
+        public void stopped(MediaPlayer mediaPlayer) {}
+        public void finished(MediaPlayer mediaPlayer) {}
+        public void timeChanged(MediaPlayer mediaPlayer, long newTime) {}
+        public void positionChanged(MediaPlayer mediaPlayer, float newPosition) {}
+        public void seekableChanged(MediaPlayer mediaPlayer, int newSeekable) {}
+        public void pausableChanged(MediaPlayer mediaPlayer, int newPausable) {}
+        public void titleChanged(MediaPlayer mediaPlayer, int newTitle) {}
+        public void snapshotTaken(MediaPlayer mediaPlayer, String filename) {}
+        public void lengthChanged(MediaPlayer mediaPlayer, long newLength) {}
+        public void videoOutput(MediaPlayer mediaPlayer, int newCount) {}
+        public void scrambledChanged(MediaPlayer mediaPlayer, int newScrambled) {}
+        public void elementaryStreamAdded(MediaPlayer mediaPlayer, TrackType type, int id) {}
+        public void elementaryStreamDeleted(MediaPlayer mediaPlayer, TrackType type, int id) {}
+        public void elementaryStreamSelected(MediaPlayer mediaPlayer, TrackType type, int id) {}
+        public void error(MediaPlayer mediaPlayer) {}
+        public void mediaPlayerReady(MediaPlayer mediaPlayer) {}
+    }
 
     @Override
     public void start(Stage stage) {
@@ -39,27 +81,46 @@ public class Main extends Application {
 
         mediaPlayerFactory = new MediaPlayerFactory();
         mediaPlayer = mediaPlayerFactory.mediaPlayers().newEmbeddedMediaPlayer();
+        
+        addListenerForButtons();
 
         videoView = new ImageView();
-        videoView.setFitWidth(960);
-        videoView.setFitHeight(540);
         videoView.setPreserveRatio(true);
+        videoView.setStyle("-fx-background-color: black;");
 
         mediaPlayer.videoSurface().set(new ImageViewVideoSurface(videoView));
 
         MenuBar menuBar = new MenuBar();
+
         Menu fileMenu = new Menu("File");
         MenuItem openItem = new MenuItem("Open File");
-        MenuItem exitItem = new MenuItem("Exit");
 
-        openItem.setOnAction(e -> openMedia(stage));
+        MenuItem exitItem = new MenuItem("Exit");
+        
+        audioMenu = new Menu("Audio");
+        subtitleMenu = new Menu("Subtitles");
+        
+        MenuItem loadSubtitleItem = new MenuItem("Open Subtitle File...");
+        loadSubtitleItem.setOnAction(e -> loadSubtitle(stage));
+        subtitleMenu.getItems().add(loadSubtitleItem);
+
+        openItem.setOnAction(e -> {
+            openMedia(stage);
+            Platform.runLater(() -> {
+                populateAudioTracks(audioMenu);
+                populateSubtitleTracks(subtitleMenu);
+            });
+        });
+
         exitItem.setOnAction(e -> {
             stop();
             stage.close();
         });
 
         fileMenu.getItems().addAll(openItem, exitItem);
-        menuBar.getMenus().add(fileMenu);
+        menuBar.getMenus().addAll(fileMenu, audioMenu, subtitleMenu);
+
+        VBox menuBarContainer = new VBox(menuBar);
 
         Slider progressSlider = new Slider();
         progressSlider.setPrefWidth(800);
@@ -68,12 +129,18 @@ public class Main extends Application {
 
         Label timeLabel = new Label("00:00 / 00:00");
 
-        Button playButton = new Button("▶ Play");
-        Button pauseButton = new Button("⏸ Pause");
-        Button stopButton = new Button("⏹ Stop");
+        playButton = new Button("▶ Play");
+        pauseButton = new Button("⏸ Pause");
+        stopButton = new Button("⏹ Stop");
 
-        playButton.setOnAction(e -> mediaPlayer.controls().play());
-        pauseButton.setOnAction(e -> mediaPlayer.controls().pause());
+        playButton.setOnAction(e -> {
+        	mediaPlayer.controls().play();
+        	updateButtonStates();
+        });
+        pauseButton.setOnAction(e -> {
+        	mediaPlayer.controls().pause();
+        	updateButtonStates();
+        });
 
         stopButton.setOnAction(e -> {
             mediaPlayer.controls().stop();
@@ -83,6 +150,7 @@ public class Main extends Application {
             updateSliderTrackStyle(progressSlider, 0);
 
             timeLabel.setText("00:00 / " + formatTime(mediaPlayer.media().info().duration()));
+            updateButtonStates();
         });
 
         progressSlider.setOnMousePressed(e -> {
@@ -150,23 +218,44 @@ public class Main extends Application {
 
         buttonsBar.setAlignment(javafx.geometry.Pos.CENTER);
 
-        VBox controlBox = new VBox(5, progressSlider, buttonsBar);
+        controlBox = new VBox(5, progressSlider, buttonsBar);
         controlBox.setPadding(new Insets(10));
         controlBox.setStyle("-fx-background-color: #f0f0f0;");
         controlBox.setAlignment(javafx.geometry.Pos.CENTER);
 
-        BorderPane root = new BorderPane();
-        root.setTop(menuBar);
+        root = new BorderPane();
+        root.setTop(menuBarContainer);
         root.setCenter(videoView);
         root.setBottom(controlBox);
+        root.setStyle("-fx-background-color: black;"); // Set root background to black
+        
+        Button fullscreenButton = new Button("⛶"); // or use an icon
+        fullscreenButton.setOnAction(e -> toggleFullScreen(stage));
 
         Scene scene = new Scene(root, 1000, 750);
         stage.setTitle("Flickwav VLCJ Player");
         stage.setScene(scene);
         stage.show();
         
+        setupAutoHideControls(scene);
+        
+        videoView.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2) {
+                toggleFullScreen(primaryStage);
+            }
+        });
+        
+        videoView.fitWidthProperty().bind(root.widthProperty());
+        videoView.fitHeightProperty().bind(root.heightProperty().subtract(controlBox.heightProperty()).subtract(menuBar.heightProperty()));
+        
         Platform.runLater(() -> root.requestFocus());
         
+        scene.setOnKeyPressed(event -> {
+            if (event.getCode() == KeyCode.ESCAPE) {
+                stage.setFullScreen(false);
+            }
+        });
+
         scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
             switch (event.getCode()) {
                 case SPACE:
@@ -225,6 +314,9 @@ public class Main extends Application {
                         }
                     });
                 }
+                else {
+                    Platform.runLater(() -> updateButtonStates());
+				}
                 try {
                     Thread.sleep(500);
                 } catch (InterruptedException e) {
@@ -236,6 +328,194 @@ public class Main extends Application {
         updateThread.start();
 
     }
+    
+    private void setupAutoHideControls(Scene scene) {
+        hideControlsTimer = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(3));
+        hideControlsTimer.setOnFinished(e -> {
+            if (primaryStage.isFullScreen()) {
+                hideControls();
+            }
+        });
+
+        scene.setOnMouseMoved(e -> {
+            if (primaryStage.isFullScreen()) {
+                if (!controlsVisible) showControls();
+                hideControlsTimer.playFromStart();
+            } else {
+                // In windowed mode, always show controls
+                if (!controlsVisible) showControls();
+                hideControlsTimer.stop();
+            }
+        });
+
+        controlBox.setOnMouseEntered(e -> {
+            showControls();
+            hideControlsTimer.stop();
+        });
+
+        controlBox.setOnMouseExited(e -> {
+            if (primaryStage.isFullScreen()) {
+                hideControlsTimer.playFromStart();
+            }
+        });
+    }
+
+    private void hideControls() {
+        controlBox.setVisible(false);
+        controlBox.setManaged(false); // 🔧 Add this line
+        root.setCursor(javafx.scene.Cursor.NONE);
+        controlsVisible = false;
+    }
+
+
+    private void showControls() {
+        controlBox.setVisible(true);
+        controlBox.setManaged(true); // 🔧 Add this line
+        root.setCursor(javafx.scene.Cursor.DEFAULT);
+        controlsVisible = true;
+    }
+
+	private void addListenerForButtons() {
+		mediaPlayer.events().addMediaPlayerEventListener(new SimpleMediaPlayerEventAdapter() {
+            @Override
+            public void playing(MediaPlayer mediaPlayer) {
+                Platform.runLater(() -> updateButtonStates());
+            }
+
+            @Override
+            public void paused(MediaPlayer mediaPlayer) {
+                Platform.runLater(() -> updateButtonStates());
+            }
+
+            @Override
+            public void stopped(MediaPlayer mediaPlayer) {
+                Platform.runLater(() -> updateButtonStates());
+            }
+
+            @Override
+            public void finished(MediaPlayer mediaPlayer) {
+                Platform.runLater(() -> updateButtonStates());
+            }
+            
+            @Override
+            public void mediaParsedChanged(MediaPlayer mediaPlayer, boolean parsed) {
+                if (parsed) {
+                    Platform.runLater(() -> {
+                        populateAudioTracks(audioMenu);
+                        populateSubtitleTracks(subtitleMenu);
+                    });
+                }
+            }
+
+			@Override
+			public void forward(MediaPlayer mediaPlayer) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void backward(MediaPlayer mediaPlayer) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void corked(MediaPlayer mediaPlayer, boolean corked) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void muted(MediaPlayer mediaPlayer, boolean muted) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void volumeChanged(MediaPlayer mediaPlayer, float volume) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void audioDeviceChanged(MediaPlayer mediaPlayer, String audioDevice) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void chapterChanged(MediaPlayer mediaPlayer, int newChapter) {
+				// TODO Auto-generated method stub
+				
+			}
+        });
+	}
+	
+	private void toggleFullScreen(Stage stage) {
+	    boolean goingFullScreen = !stage.isFullScreen();
+	    stage.setFullScreen(goingFullScreen);
+	    Platform.runLater(() -> {
+	        Node menuBarContainer = root.getTop();
+	        if (menuBarContainer != null) {
+	            menuBarContainer.setVisible(!goingFullScreen);
+	            menuBarContainer.setManaged(!goingFullScreen);
+	        }
+	    });
+	}
+
+
+
+    private void updateButtonStates() {
+        State state = mediaPlayer.status().state();
+
+        switch (state) {
+            case PLAYING:
+                playButton.setDisable(true);
+                pauseButton.setDisable(false);
+                stopButton.setDisable(false);
+                break;
+
+            case PAUSED:
+                playButton.setDisable(false);
+                pauseButton.setDisable(true);
+                stopButton.setDisable(false);
+                break;
+
+            case STOPPED:
+            case ENDED:
+            case NOTHING_SPECIAL:
+                playButton.setDisable(false);
+                pauseButton.setDisable(true);
+                stopButton.setDisable(true);
+                break;
+
+            default:
+                playButton.setDisable(true);
+                pauseButton.setDisable(true);
+                stopButton.setDisable(true);
+                break;
+        }
+    }
+
+    private void loadSubtitle(Stage stage) {
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Load Subtitle File");
+        fileChooser.getExtensionFilters().addAll(
+            new FileChooser.ExtensionFilter("Subtitle Files", "*.srt", "*.sub", "*.ass"),
+            new FileChooser.ExtensionFilter("All Files", "*.*")
+        );
+
+        File subtitleFile = fileChooser.showOpenDialog(stage);
+        if (subtitleFile != null) {
+            boolean success = mediaPlayer.subpictures().setSubTitleFile(subtitleFile);
+            if (success) {
+                System.out.println("✅ Subtitle loaded: " + subtitleFile.getAbsolutePath());
+            } else {
+                System.err.println("❌ Failed to load subtitle file.");
+            }
+        }
+    }
+
 
     private String formatTime(long millis) {
         long seconds = millis / 1000;
@@ -266,9 +546,11 @@ public class Main extends Application {
             }
 
             mediaPlayer.media().play(path);
+            mediaPlayer.media().start(file.getAbsolutePath());
 
             // ✅ Shift focus to root so SPACE/ENTER work
             Platform.runLater(() -> primaryStage.getScene().getRoot().requestFocus());
+            updateButtonStates();
         }
     }
 
@@ -311,6 +593,45 @@ public class Main extends Application {
             ));
         }
     }
+    
+    private void populateAudioTracks(Menu audioMenu) {
+        audioMenu.getItems().clear();
+        var audioTracks = mediaPlayer.audio().trackDescriptions();
+
+        if (audioTracks != null) {
+            for (var track : audioTracks) {
+                MenuItem item = new MenuItem(track.description());
+                int id = track.id();
+                item.setOnAction(e -> mediaPlayer.audio().setTrack(id));
+                audioMenu.getItems().add(item);
+            }
+        } else {
+            audioMenu.getItems().add(new MenuItem("No audio tracks found"));
+        }
+    }
+
+    private void populateSubtitleTracks(Menu subtitleMenu) {
+        subtitleMenu.getItems().clear();
+        
+        MenuItem loadSubtitleItem = new MenuItem("Open Subtitle File...");
+        loadSubtitleItem.setOnAction(e -> loadSubtitle(primaryStage));
+        subtitleMenu.getItems().add(loadSubtitleItem);
+        subtitleMenu.getItems().add(new SeparatorMenuItem());
+
+        var subtitleTracks = mediaPlayer.subpictures().trackDescriptions();
+
+        if (subtitleTracks != null) {
+            for (var track : subtitleTracks) {
+                MenuItem item = new MenuItem(track.description());
+                int id = track.id();
+                item.setOnAction(e -> mediaPlayer.subpictures().setTrack(id));
+                subtitleMenu.getItems().add(item);
+            }
+        } else {
+            subtitleMenu.getItems().add(new MenuItem("No subtitle tracks found"));
+        }
+    }
+
 
 
     @Override
