@@ -30,6 +30,9 @@ import com.mpatric.mp3agic.*;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.util.Scanner;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class Main extends Application {
 
@@ -46,7 +49,6 @@ public class Main extends Application {
     private Menu subtitleMenu;
     private boolean controlsVisible = true;
     private javafx.animation.PauseTransition hideControlsTimer;
-
     
     private abstract class SimpleMediaPlayerEventAdapter implements MediaPlayerEventListener {
         public void mediaChanged(MediaPlayer mediaPlayer, MediaRef media) {}
@@ -103,6 +105,11 @@ public class Main extends Application {
         MenuItem loadSubtitleItem = new MenuItem("Open Subtitle File...");
         loadSubtitleItem.setOnAction(e -> loadSubtitle(stage));
         subtitleMenu.getItems().add(loadSubtitleItem);
+        
+        Menu streamingMenu = new Menu("Streaming");
+        MenuItem youtubeStreamItem = new MenuItem("Play YouTube Video...");
+        youtubeStreamItem.setOnAction(e -> showYouTubeStreamDialog());
+        streamingMenu.getItems().add(youtubeStreamItem);
 
         openItem.setOnAction(e -> {
             openMedia(stage);
@@ -118,7 +125,7 @@ public class Main extends Application {
         });
 
         fileMenu.getItems().addAll(openItem, exitItem);
-        menuBar.getMenus().addAll(fileMenu, audioMenu, subtitleMenu);
+        menuBar.getMenus().addAll(fileMenu, audioMenu, subtitleMenu, streamingMenu);
 
         VBox menuBarContainer = new VBox(menuBar);
 
@@ -632,7 +639,104 @@ public class Main extends Application {
         }
     }
 
+    private void showYouTubeStreamDialog() {
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("YouTube Streaming");
+        dialog.setHeaderText("Stream YouTube Video");
+        dialog.setContentText("Enter YouTube URL:");
 
+        dialog.showAndWait().ifPresent(url -> {
+            if (!url.trim().isEmpty()) {
+                playYouTubeVideo(url.trim());
+            }
+        });
+    }
+        
+    private void playYouTubeVideo(String youtubeUrl) {
+        new Thread(() -> {
+            try {
+                System.out.println("Fetching stream URL for: " + youtubeUrl);
+                
+                // Get direct stream URL using yt-dlp
+                ProcessBuilder builder = new ProcessBuilder(
+                	    "yt-dlp",
+                	    "-f b", 
+                	    "-g",
+                	    "--force-ipv4",
+                	    youtubeUrl
+                	);
+                
+                builder.redirectErrorStream(true);
+                Process process = builder.start();
+
+                // Read the output URL
+                Scanner scanner = new Scanner(process.getInputStream());
+                String directUrl = null;
+                while (scanner.hasNextLine()) {
+                    String line = scanner.nextLine().trim();
+                    if (line.startsWith("http")) {
+                        directUrl = line;
+                    }
+                }
+                scanner.close();
+
+                int exitCode = process.waitFor();
+
+                if (directUrl == null || exitCode != 0 || directUrl.isEmpty()) {
+                    showError("Failed to extract YouTube stream URL.");
+                    return;
+                }
+
+                System.out.println("Stream URL: " + directUrl);
+            	String url = directUrl;
+
+                // Play in VLCJ with proper streaming options
+                Platform.runLater(() -> {
+                	String[] vlcOptions = {
+                		    ":network-caching=5000",            // Increased to 5s buffer
+                		    ":http-reconnect",
+                		    ":http-continuous",
+                		    ":http-user-agent=Mozilla/5.0",
+                		    ":http-referrer=https://www.youtube.com/",
+                		    ":tls-version=1.2"
+                		};
+
+                    mediaPlayer.media().play(url, vlcOptions);
+                    primaryStage.setTitle("FlickWav - YouTube Stream");
+                });
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                showError("Error streaming YouTube: " + ex.getMessage());
+            }
+        }).start();
+    }    
+
+    private void showError(String message) {
+        Platform.runLater(() -> {
+            Alert alert = new Alert(Alert.AlertType.ERROR);
+            alert.setTitle("Error");
+            alert.setHeaderText(null);
+            alert.setContentText(message);
+            alert.showAndWait();
+        });
+    }
+    
+    private String getStreamUrlFromYoutube(String youtubeUrl) {
+        try {
+            ProcessBuilder builder = new ProcessBuilder("yt-dlp", "-g", youtubeUrl);
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
+
+            java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()));
+            String line = reader.readLine(); // Only need first line — video URL
+            process.waitFor();
+            return line;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 
     @Override
     public void stop() {
